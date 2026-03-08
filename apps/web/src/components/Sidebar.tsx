@@ -102,10 +102,6 @@ function sortThreadsByRecency(threads: ReadonlyArray<Thread>): Thread[] {
   return [...threads].toSorted(compareThreadsByCreatedAtDesc);
 }
 
-function formatThreadCountLabel(count: number): string {
-  return count === 1 ? "1 thread" : `${count} threads`;
-}
-
 interface ThreadStatusPill {
   label: "Working" | "Connecting" | "Completed" | "Pending Approval";
   colorClass: string;
@@ -933,12 +929,9 @@ export default function Sidebar() {
     [projects, removeProject, threads],
   );
 
-  const projectRemoveThreadCount = projectRemoveDialog
-    ? threads.filter((thread) => thread.projectId === projectRemoveDialog.projectId).length
-    : 0;
   const projectRemoveDescription =
-    projectRemoveThreadCount > 0
-      ? `Removing this project will permanently remove all ${formatThreadCountLabel(projectRemoveThreadCount)} in it. This action cannot be undone.`
+    projectRemoveDialog !== null
+      ? "Removing this project will permanently remove all of its threads. This action cannot be undone."
       : "Removing this project is permanent and cannot be undone.";
 
   useEffect(() => {
