@@ -1248,6 +1248,21 @@ export default function Sidebar() {
       <SidebarContent className="gap-0">
         <SidebarGroup className="px-2 py-2">
           <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={<button type="button" />}
+                size="sm"
+                isActive={pathname === "/"}
+                className="cursor-pointer gap-2 px-2 py-1.5 text-left hover:bg-accent hover:text-foreground"
+                onClick={() => {
+                  void navigate({ to: "/" });
+                }}
+              >
+                <SquarePenIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                <span className="flex-1 truncate text-xs font-medium">New thread</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+
             {projects.map((project) => {
               const projectThreads = sortThreadsByRecency(
                 threads.filter((thread) => thread.projectId === project.id),

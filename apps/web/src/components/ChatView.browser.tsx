@@ -585,6 +585,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
     });
     useStore.setState({
       projects: [],
@@ -764,6 +765,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       projectDraftThreadIdByProjectId: {
         [PROJECT_ID]: THREAD_ID,
       },
+      homeDraftThreadId: null,
     });
 
     const mounted = await mountChatView({

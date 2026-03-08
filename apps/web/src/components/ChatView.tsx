@@ -587,9 +587,10 @@ const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
 
 interface ChatViewProps {
   threadId: ThreadId;
+  mode?: "thread" | "home";
 }
 
-export default function ChatView({ threadId }: ChatViewProps) {
+export default function ChatView({ threadId, mode = "thread" }: ChatViewProps) {
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
   const markThreadVisited = useStore((store) => store.markThreadVisited);
@@ -630,6 +631,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   const clearDraftThread = useComposerDraftStore((store) => store.clearDraftThread);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
+  const setHomeDraftProjectId = useComposerDraftStore((store) => store.setHomeDraftProjectId);
   const draftThread = useComposerDraftStore(
     (store) => store.draftThreadsByThreadId[threadId] ?? null,
   );
@@ -751,6 +753,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [draftThread, fallbackDraftProject?.model, localDraftError, threadId],
   );
   const activeThread = serverThread ?? localDraftThread;
+  const isHomeComposer = mode === "home";
   const runtimeMode =
     composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
@@ -766,6 +769,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
+  const activeProjectName = activeProject?.name ?? "Select project";
+
+  useEffect(() => {
+    if (!serverThread || !draftThread) {
+      return;
+    }
+    clearDraftThread(threadId);
+  }, [clearDraftThread, draftThread, serverThread, threadId]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -2634,7 +2645,21 @@ export default function ChatView({ threadId }: ChatViewProps) {
       });
       turnStartSucceeded = true;
       if (isFirstMessage) {
-        clearDraftThread(threadIdForSend);
+        if (isHomeComposer) {
+          await api.orchestration
+            .getSnapshot()
+            .then((snapshot) => {
+              syncServerReadModel(snapshot);
+            })
+            .catch(() => undefined);
+          await navigate({
+            to: "/$threadId",
+            params: { threadId: threadIdForSend },
+            replace: true,
+          });
+        } else {
+          clearDraftThread(threadIdForSend);
+        }
       }
     })().catch(async (err: unknown) => {
       if (createdServerThreadForLocalDraft && !turnStartSucceeded) {
@@ -3418,7 +3443,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       {/* Messages */}
       <div
         ref={setMessagesScrollContainerRef}
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 py-3 sm:px-5 sm:py-4"
+        className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 py-3 sm:px-5 sm:py-4"
         onScroll={onMessagesScroll}
         onClickCapture={onMessagesClickCapture}
         onWheel={onMessagesWheel}
@@ -3430,10 +3455,56 @@ export default function ChatView({ threadId }: ChatViewProps) {
         onTouchEnd={onMessagesTouchEnd}
         onTouchCancel={onMessagesTouchEnd}
       >
+        {isHomeComposer && timelineEntries.length === 0 && activeProject && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
+            <div className="pointer-events-auto flex w-full max-w-md flex-col items-center gap-4 text-center">
+              <div className="space-y-3">
+                <h1 className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+                  New thread
+                </h1>
+                <p className="text-sm text-muted-foreground">
+                  Choose the project this conversation should belong to.
+                </p>
+              </div>
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <button
+                      type="button"
+                      className="inline-flex cursor-pointer items-center gap-2 rounded-md px-3 py-1.5 text-lg font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring sm:text-xl"
+                      aria-label="Select project for new thread"
+                    />
+                  }
+                >
+                  <span className="max-w-xs truncate">{activeProjectName}</span>
+                  <ChevronDownIcon className="size-5 shrink-0 opacity-70" />
+                </MenuTrigger>
+                <MenuPopup align="center" sideOffset={8}>
+                  <MenuRadioGroup
+                    value={activeProject.id}
+                    onValueChange={(nextValue) => {
+                      if (!nextValue) {
+                        return;
+                      }
+                      setHomeDraftProjectId(nextValue as ProjectId);
+                    }}
+                  >
+                    {projects.map((project) => (
+                      <MenuRadioItem key={project.id} value={project.id}>
+                        {project.name}
+                      </MenuRadioItem>
+                    ))}
+                  </MenuRadioGroup>
+                </MenuPopup>
+              </Menu>
+            </div>
+          </div>
+        )}
         <MessagesTimeline
           key={activeThread.id}
           hasMessages={timelineEntries.length > 0}
           isWorking={isWorking}
+          showEmptyPlaceholder={!isHomeComposer}
           activeTurnInProgress={isWorking || !latestTurnSettled}
           activeTurnStartedAt={activeWorkStartedAt}
           scrollContainer={messagesScrollElement}
@@ -4685,6 +4756,7 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
 interface MessagesTimelineProps {
   hasMessages: boolean;
   isWorking: boolean;
+  showEmptyPlaceholder?: boolean;
   activeTurnInProgress: boolean;
   activeTurnStartedAt: string | null;
   scrollContainer: HTMLDivElement | null;
@@ -4739,6 +4811,7 @@ function estimateTimelineProposedPlanHeight(proposedPlan: TimelineProposedPlan):
 const MessagesTimeline = memo(function MessagesTimeline({
   hasMessages,
   isWorking,
+  showEmptyPlaceholder = true,
   activeTurnInProgress,
   activeTurnStartedAt,
   scrollContainer,
@@ -5236,7 +5309,7 @@ const MessagesTimeline = memo(function MessagesTimeline({
     </div>
   );
 
-  if (!hasMessages && !isWorking) {
+  if (!hasMessages && !isWorking && showEmptyPlaceholder) {
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground/30">

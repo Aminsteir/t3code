@@ -40,6 +40,7 @@ describe("composerDraftStore addImages", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
     });
     originalRevokeObjectUrl = URL.revokeObjectURL;
     revokeSpy = vi.fn();
@@ -129,6 +130,7 @@ describe("composerDraftStore clearComposerContent", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
     });
     originalRevokeObjectUrl = URL.revokeObjectURL;
     revokeSpy = vi.fn();
@@ -165,6 +167,7 @@ describe("composerDraftStore project draft thread mapping", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
     });
   });
 
@@ -333,6 +336,79 @@ describe("composerDraftStore project draft thread mapping", () => {
   });
 });
 
+describe("composerDraftStore home draft thread mapping", () => {
+  const projectId = ProjectId.makeUnsafe("project-home-a");
+  const otherProjectId = ProjectId.makeUnsafe("project-home-b");
+  const threadId = ThreadId.makeUnsafe("thread-home-a");
+  const otherThreadId = ThreadId.makeUnsafe("thread-home-b");
+
+  beforeEach(() => {
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
+    });
+  });
+
+  it("stores and reads a dedicated home draft thread", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setHomeDraftThreadId(projectId, threadId, {
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+
+    expect(useComposerDraftStore.getState().getHomeDraftThread()).toEqual({
+      threadId,
+      projectId,
+      branch: null,
+      worktreePath: null,
+      envMode: "local",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+  });
+
+  it("updates the selected project without creating a project-scoped mapping", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setHomeDraftThreadId(projectId, threadId);
+    store.setHomeDraftProjectId(otherProjectId);
+
+    expect(useComposerDraftStore.getState().getHomeDraftThread()).toMatchObject({
+      threadId,
+      projectId: otherProjectId,
+    });
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(otherProjectId)).toBeNull();
+  });
+
+  it("clears orphaned home drafts when remapped to a new thread id", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setHomeDraftThreadId(projectId, threadId);
+    store.setPrompt(threadId, "carry me");
+    store.setHomeDraftThreadId(projectId, otherThreadId);
+
+    expect(useComposerDraftStore.getState().getHomeDraftThread()?.threadId).toBe(otherThreadId);
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).toBeNull();
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toBeUndefined();
+  });
+
+  it("keeps shared drafts when the home draft thread is also mapped to a project", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setProjectDraftThreadId(projectId, threadId);
+    store.setHomeDraftThreadId(projectId, threadId);
+    store.clearHomeDraftThreadId();
+
+    expect(useComposerDraftStore.getState().getHomeDraftThread()).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      threadId,
+    );
+  });
+});
+
 describe("composerDraftStore codex fast mode", () => {
   const threadId = ThreadId.makeUnsafe("thread-service-tier");
 
@@ -341,6 +417,7 @@ describe("composerDraftStore codex fast mode", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
     });
   });
 
@@ -368,6 +445,7 @@ describe("composerDraftStore setModel", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
     });
   });
 
@@ -388,6 +466,7 @@ describe("composerDraftStore setProvider", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
     });
   });
 
@@ -417,6 +496,7 @@ describe("composerDraftStore runtime and interaction settings", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      homeDraftThreadId: null,
     });
   });
 
