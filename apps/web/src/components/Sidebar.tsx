@@ -6,7 +6,7 @@ import {
   SquarePenIcon,
   TerminalIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_RUNTIME_MODE,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -42,6 +42,17 @@ import {
   shouldToastDesktopUpdateActionResult,
 } from "./desktopUpdate.logic";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
+import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
+import { Label } from "./ui/label";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import {
   SidebarContent,
@@ -81,6 +92,16 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function compareThreadsByCreatedAtDesc(a: Thread, b: Thread): number {
+  const byDate = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  if (byDate !== 0) return byDate;
+  return b.id.localeCompare(a.id);
+}
+
+function sortThreadsByRecency(threads: ReadonlyArray<Thread>): Thread[] {
+  return [...threads].toSorted(compareThreadsByCreatedAtDesc);
+}
+
 interface ThreadStatusPill {
   label: "Working" | "Connecting" | "Completed" | "Pending Approval";
   colorClass: string;
@@ -99,6 +120,11 @@ interface PrStatusIndicator {
   colorClass: string;
   tooltip: string;
   url: string;
+}
+
+interface ProjectRemoveDialogState {
+  projectId: ProjectId;
+  projectName: string;
 }
 
 type ThreadPr = GitStatusResult["pr"];
@@ -298,8 +324,14 @@ export default function Sidebar() {
   const [expandedThreadListsByProject, setExpandedThreadListsByProject] = useState<
     ReadonlySet<ProjectId>
   >(() => new Set());
+  const [projectRemoveDialog, setProjectRemoveDialog] = useState<ProjectRemoveDialogState | null>(
+    null,
+  );
+  const [projectRemoveConfirmed, setProjectRemoveConfirmed] = useState(false);
+  const [isRemovingProject, setIsRemovingProject] = useState(false);
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
+  const projectRemoveCheckboxId = useId();
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
   const pendingApprovalByThreadId = useMemo(() => {
     const map = new Map<ThreadId, boolean>();
@@ -458,13 +490,9 @@ export default function Sidebar() {
 
   const focusMostRecentThreadForProject = useCallback(
     (projectId: ProjectId) => {
-      const latestThread = threads
-        .filter((thread) => thread.projectId === projectId)
-        .toSorted((a, b) => {
-          const byDate = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-          if (byDate !== 0) return byDate;
-          return b.id.localeCompare(a.id);
-        })[0];
+      const latestThread = sortThreadsByRecency(
+        threads.filter((thread) => thread.projectId === projectId),
+      )[0];
       if (!latestThread) return;
 
       void navigate({
@@ -594,52 +622,25 @@ export default function Sidebar() {
     [],
   );
 
-  const handleThreadContextMenu = useCallback(
-    async (threadId: ThreadId, position: { x: number; y: number }) => {
+  const deleteThread = useCallback(
+    async (
+      threadId: ThreadId,
+      options?: {
+        confirmThreadDelete?: boolean;
+        confirmOrphanedWorktree?: boolean;
+        navigateOnDelete?: boolean;
+        fallbackThreadId?: ThreadId | null;
+      },
+    ) => {
       const api = readNativeApi();
       if (!api) return;
-      const clicked = await api.contextMenu.show(
-        [
-          { id: "rename", label: "Rename thread" },
-          { id: "mark-unread", label: "Mark unread" },
-          { id: "copy-thread-id", label: "Copy Thread ID" },
-          { id: "delete", label: "Delete", destructive: true },
-        ],
-        position,
-      );
-      const thread = threads.find((t) => t.id === threadId);
+
+      const thread = threads.find((entry) => entry.id === threadId);
       if (!thread) return;
 
-      if (clicked === "rename") {
-        setRenamingThreadId(threadId);
-        setRenamingTitle(thread.title);
-        renamingCommittedRef.current = false;
-        return;
-      }
-
-      if (clicked === "mark-unread") {
-        markThreadUnread(threadId);
-        return;
-      }
-      if (clicked === "copy-thread-id") {
-        try {
-          await copyTextToClipboard(threadId);
-          toastManager.add({
-            type: "success",
-            title: "Thread ID copied",
-            description: threadId,
-          });
-        } catch (error) {
-          toastManager.add({
-            type: "error",
-            title: "Failed to copy thread ID",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          });
-        }
-        return;
-      }
-      if (clicked !== "delete") return;
-      if (appSettings.confirmThreadDelete) {
+      const shouldConfirmThreadDelete =
+        options?.confirmThreadDelete ?? appSettings.confirmThreadDelete;
+      if (shouldConfirmThreadDelete) {
         const confirmed = await api.dialogs.confirm(
           [
             `Delete thread "${thread.title}"?`,
@@ -650,8 +651,12 @@ export default function Sidebar() {
           return;
         }
       }
+
       const threadProject = projects.find((project) => project.id === thread.projectId);
-      const orphanedWorktreePath = getOrphanedWorktreePathForThread(threads, threadId);
+      const shouldConfirmOrphanedWorktree = options?.confirmOrphanedWorktree ?? true;
+      const orphanedWorktreePath = shouldConfirmOrphanedWorktree
+        ? getOrphanedWorktreePathForThread(threads, threadId)
+        : null;
       const displayWorktreePath = orphanedWorktreePath
         ? formatWorktreePathForDisplay(orphanedWorktreePath)
         : null;
@@ -687,8 +692,11 @@ export default function Sidebar() {
         // Terminal may already be closed
       }
 
-      const shouldNavigateToFallback = routeThreadId === threadId;
-      const fallbackThreadId = threads.find((entry) => entry.id !== threadId)?.id ?? null;
+      const shouldNavigateToFallback =
+        (options?.navigateOnDelete ?? true) && routeThreadId === threadId;
+      const fallbackThreadId = shouldNavigateToFallback
+        ? (options?.fallbackThreadId ?? threads.find((entry) => entry.id !== threadId)?.id ?? null)
+        : null;
       await api.orchestration.dispatchCommand({
         type: "thread.delete",
         commandId: newCommandId(),
@@ -739,7 +747,6 @@ export default function Sidebar() {
       clearComposerDraftForThread,
       clearProjectDraftThreadById,
       clearTerminalState,
-      markThreadUnread,
       navigate,
       projects,
       removeWorktreeMutation,
@@ -747,6 +754,152 @@ export default function Sidebar() {
       threads,
     ],
   );
+
+  const handleThreadContextMenu = useCallback(
+    async (threadId: ThreadId, position: { x: number; y: number }) => {
+      const api = readNativeApi();
+      if (!api) return;
+      const clicked = await api.contextMenu.show(
+        [
+          { id: "rename", label: "Rename thread" },
+          { id: "mark-unread", label: "Mark unread" },
+          { id: "copy-thread-id", label: "Copy Thread ID" },
+          { id: "delete", label: "Delete", destructive: true },
+        ],
+        position,
+      );
+      const thread = threads.find((t) => t.id === threadId);
+      if (!thread) return;
+
+      if (clicked === "rename") {
+        setRenamingThreadId(threadId);
+        setRenamingTitle(thread.title);
+        renamingCommittedRef.current = false;
+        return;
+      }
+
+      if (clicked === "mark-unread") {
+        markThreadUnread(threadId);
+        return;
+      }
+      if (clicked === "copy-thread-id") {
+        try {
+          await copyTextToClipboard(threadId);
+          toastManager.add({
+            type: "success",
+            title: "Thread ID copied",
+            description: threadId,
+          });
+        } catch (error) {
+          toastManager.add({
+            type: "error",
+            title: "Failed to copy thread ID",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          });
+        }
+        return;
+      }
+      if (clicked !== "delete") return;
+      await deleteThread(threadId);
+    },
+    [deleteThread, markThreadUnread, threads],
+  );
+
+  const closeProjectRemoveDialog = useCallback(() => {
+    if (isRemovingProject) return;
+    setProjectRemoveDialog(null);
+    setProjectRemoveConfirmed(false);
+  }, [isRemovingProject]);
+
+  const removeProject = useCallback(
+    async (projectId: ProjectId) => {
+      if (isRemovingProject) return;
+
+      const api = readNativeApi();
+      if (!api) return;
+
+      const project = projects.find((entry) => entry.id === projectId);
+      if (!project) {
+        closeProjectRemoveDialog();
+        return;
+      }
+
+      const projectThreads = threads.filter((thread) => thread.projectId === project.id);
+      const deletedThreadIds = new Set(projectThreads.map((thread) => thread.id));
+      const projectDraftThread = getDraftThreadByProjectId(project.id);
+      const activeRouteWillBeRemoved =
+        routeThreadId !== null &&
+        (deletedThreadIds.has(routeThreadId) || projectDraftThread?.threadId === routeThreadId);
+      const fallbackThreadId = activeRouteWillBeRemoved
+        ? sortThreadsByRecency(threads.filter((thread) => !deletedThreadIds.has(thread.id)))[0]?.id ??
+          null
+        : null;
+
+      setIsRemovingProject(true);
+      try {
+        for (const thread of projectThreads) {
+          await deleteThread(thread.id, {
+            confirmThreadDelete: false,
+            confirmOrphanedWorktree: false,
+            navigateOnDelete: false,
+          });
+        }
+
+        if (projectDraftThread) {
+          clearComposerDraftForThread(projectDraftThread.threadId);
+        }
+        clearProjectDraftThreadId(project.id);
+
+        await api.orchestration.dispatchCommand({
+          type: "project.delete",
+          commandId: newCommandId(),
+          projectId: project.id,
+        });
+
+        if (activeRouteWillBeRemoved) {
+          if (fallbackThreadId) {
+            void navigate({
+              to: "/$threadId",
+              params: { threadId: fallbackThreadId },
+              replace: true,
+            });
+          } else {
+            void navigate({ to: "/", replace: true });
+          }
+        }
+
+        setProjectRemoveDialog(null);
+        setProjectRemoveConfirmed(false);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error deleting project.";
+        console.error("Failed to remove project", { projectId: project.id, error });
+        toastManager.add({
+          type: "error",
+          title: `Failed to remove "${project.name}"`,
+          description: message,
+        });
+      } finally {
+        setIsRemovingProject(false);
+      }
+    },
+    [
+      clearComposerDraftForThread,
+      clearProjectDraftThreadId,
+      closeProjectRemoveDialog,
+      deleteThread,
+      getDraftThreadByProjectId,
+      isRemovingProject,
+      navigate,
+      projects,
+      routeThreadId,
+      threads,
+    ],
+  );
+
+  const handleProjectRemoveConfirm = useCallback(async () => {
+    if (!projectRemoveDialog || !projectRemoveConfirmed) return;
+    await removeProject(projectRemoveDialog.projectId);
+  }, [projectRemoveConfirmed, projectRemoveDialog, removeProject]);
 
   const handleProjectContextMenu = useCallback(
     async (projectId: ProjectId, position: { x: number; y: number }) => {
@@ -762,49 +915,31 @@ export default function Sidebar() {
       if (!project) return;
 
       const projectThreads = threads.filter((thread) => thread.projectId === projectId);
-      if (projectThreads.length > 0) {
-        toastManager.add({
-          type: "warning",
-          title: "Project is not empty",
-          description: "Delete all threads in this project before deleting it.",
-        });
+      if (projectThreads.length === 0) {
+        await removeProject(projectId);
         return;
       }
 
-      const confirmed = await api.dialogs.confirm(
-        [`Delete project "${project.name}"?`, "This action cannot be undone."].join("\n"),
-      );
-      if (!confirmed) return;
-
-      try {
-        const projectDraftThread = getDraftThreadByProjectId(projectId);
-        if (projectDraftThread) {
-          clearComposerDraftForThread(projectDraftThread.threadId);
-        }
-        clearProjectDraftThreadId(projectId);
-        await api.orchestration.dispatchCommand({
-          type: "project.delete",
-          commandId: newCommandId(),
-          projectId,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error deleting project.";
-        console.error("Failed to remove project", { projectId, error });
-        toastManager.add({
-          type: "error",
-          title: `Failed to delete "${project.name}"`,
-          description: message,
-        });
-      }
+      setProjectRemoveDialog({
+        projectId,
+        projectName: project.name,
+      });
+      setProjectRemoveConfirmed(false);
     },
-    [
-      clearComposerDraftForThread,
-      clearProjectDraftThreadId,
-      getDraftThreadByProjectId,
-      projects,
-      threads,
-    ],
+    [projects, removeProject, threads],
   );
+
+  const projectRemoveDescription =
+    projectRemoveDialog !== null
+      ? "Removing this project will permanently remove all of its threads. This action cannot be undone."
+      : "Removing this project is permanent and cannot be undone.";
+
+  useEffect(() => {
+    if (!projectRemoveDialog) return;
+    if (projects.some((project) => project.id === projectRemoveDialog.projectId)) return;
+    setProjectRemoveDialog(null);
+    setProjectRemoveConfirmed(false);
+  }, [projectRemoveDialog, projects]);
 
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
@@ -992,6 +1127,58 @@ export default function Sidebar() {
 
   return (
     <>
+      <AlertDialog
+        open={projectRemoveDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeProjectRemoveDialog();
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove &quot;{projectRemoveDialog?.projectName ?? "project"}&quot;?
+            </AlertDialogTitle>
+            <AlertDialogDescription>{projectRemoveDescription}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="px-6 pb-6">
+            <Label
+              htmlFor={projectRemoveCheckboxId}
+              className="items-start gap-3 rounded-xl border border-border/60 bg-muted/35 p-3 text-sm font-medium leading-5"
+            >
+              <Checkbox
+                id={projectRemoveCheckboxId}
+                checked={projectRemoveConfirmed}
+                disabled={isRemovingProject}
+                onCheckedChange={(checked) => setProjectRemoveConfirmed(checked === true)}
+                className="mt-0.5"
+              />
+              <span>
+                I understand that removing this project will also remove all of its threads.
+              </span>
+            </Label>
+          </div>
+          <AlertDialogFooter>
+            <Button
+              variant="outline"
+              onClick={closeProjectRemoveDialog}
+              disabled={isRemovingProject}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                void handleProjectRemoveConfirm();
+              }}
+              disabled={!projectRemoveConfirmed || isRemovingProject}
+            >
+              {isRemovingProject ? "Removing..." : "Remove project"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {isElectron ? (
         <>
           <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[82px]">
@@ -1027,13 +1214,9 @@ export default function Sidebar() {
         <SidebarGroup className="px-2 py-2">
           <SidebarMenu>
             {projects.map((project) => {
-              const projectThreads = threads
-                .filter((thread) => thread.projectId === project.id)
-                .toSorted((a, b) => {
-                  const byDate = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-                  if (byDate !== 0) return byDate;
-                  return b.id.localeCompare(a.id);
-                });
+              const projectThreads = sortThreadsByRecency(
+                threads.filter((thread) => thread.projectId === project.id),
+              );
               const isThreadListExpanded = expandedThreadListsByProject.has(project.id);
               const hasHiddenThreads = projectThreads.length > THREAD_PREVIEW_LIMIT;
               const visibleThreads =
